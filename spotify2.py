@@ -7,7 +7,10 @@ from PIL import Image
 import pytesseract
 from io import BytesIO
 import lyricsgenius
+from dotenv import load_dotenv
 import os
+
+load_dotenv()
 
 TOKEN = os.getenv("TOKEN")
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
@@ -16,7 +19,6 @@ SPOTIFY_REFRESH_TOKEN = os.getenv("SPOTIFY_REFRESH_TOKEN")
 GEMINI = os.getenv("GEMINI")
 GENIUS_API_TOKEN = os.getenv("GENIUS_API_TOKEN")
 
-# Set up discord intents
 intents = discord.Intents.default()
 intents.messages = True
 intents.message_content = True
@@ -27,7 +29,6 @@ genius = lyricsgenius.Genius(GENIUS_API_TOKEN)
 
 
 def get_spotify_access_token():
-    """Refresh the Spotify access token."""
     url = "https://accounts.spotify.com/api/token"
     data = {
         "grant_type": "refresh_token",
@@ -40,27 +41,18 @@ def get_spotify_access_token():
 
 
 def play_song(song_query):
-    """
-    Search and play a song on Spotify using a refined search query.
-    The song_query should be in the format "SONG_NAME by ARTIST".
-    If no track is found, repeatedly use extract_random_with_gemini as a fallback
-    until a valid song is found or a maximum number of attempts is reached.
-    """
-    # Attempt to split the query into track and artist.
     if " by " in song_query:
         track_name, artist_name = song_query.split(" by ", 1)
     else:
         track_name = song_query
         artist_name = ""
     
-    # Build the refined query.
     refined_query = (
         f"track:{track_name.strip()} artist:{artist_name.strip()}"
         if artist_name
         else track_name.strip()
     )
     
-    # Ensure the query does not exceed Spotify's maximum query length (250 characters).
     max_query_length = 240
     if len(refined_query) > max_query_length:
         refined_query = refined_query[:max_query_length]
@@ -103,11 +95,6 @@ def play_song(song_query):
 
 
 async def extract_song_from_reply(message):
-    """
-    Extract text from a replied message.
-    Checks for text, embeds, and if an image is present it uses OCR.
-    Returns a tuple (extracted_text, source_type) where source_type is either "image" or "text".
-    """
     if message.reference:
         replied_message = message.reference.resolved
         if replied_message:
@@ -156,8 +143,6 @@ def extract_song_artist_with_gemini(text):
         return "Something went wrong! 😿"
 
 
-def 
-
 
 def extract_random_with_gemini(text):
     prompt = (f"Find the song matching the text's description. "
@@ -201,11 +186,6 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    """
-    When a user sends a message with "play this", the bot checks if the message
-    is a reply. It then extracts the referenced message text, passes it to Gemini
-    for extracting song name and artist, and finally plays the song on Spotify.
-    """
     if message.author == bot.user:
         return
 
