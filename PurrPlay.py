@@ -40,41 +40,6 @@ def get_spotify_access_token():
     return response.json().get("access_token")
 
 
-def extract_song_from_reply(message):
-    if message.reference:
-        replied_message = message.reference.resolved #resolved to fetch the replied to message
-        if replied_message:
-            texts = []
-            source_type = "text"
-
-            if replied_message.content:
-                text = replied_message.content.strip()
-                texts.append(text)
-
-                if text.startswith("https://open.spotify.com/track"):
-                    return text, "spotify_link"
-                elif text.startswith("https://open.spotify.com/album"):
-                    return text, "spotify_album"
-                elif text.startswith("https://open.spotify.com/playlist"):
-                    return text, "spotify_playlist"
-            
-            if replied_message.embeds:
-                for embed in replied_message.embeds:
-                    if embed.title:
-                        texts.append(embed.title.strip())
-                    if embed.description:
-                        texts.append(embed.description.strip())
-            
-            if replied_message.attachments:
-                for attachment in replied_message.attachments:
-                    if attachment.content_type and attachment.content_type.startswith("image"):
-                        image_url = attachment.url
-                        source_type = "image"
-                        return image_url, source_type
-                    
-            return "\n".join(texts) if texts else None, source_type
-    return None, "text"
-
 def extract_id_from_url(url, content_type):
     try:
         return url.split(f"{content_type}/")[1].split("?")[0]
@@ -118,6 +83,94 @@ def play_playlist_link(url):
     playlist_id = extract_id_from_url(url, "playlist")
     if not playlist_id:
         return "Invalid Spotify playlist url"
+    
+    access_token = get_spotify_access_token()
+    sp = spotipy.Spotify(auth=access_token)
+    devices = sp.devices()["devices"]
+
+    if not devices:
+        return "No active Spotify device found, please open spotfiy somewhere"
+    
+    sp.start_playback(device_id=devices[0]["id"], context_uri=f"spotify:playlist:{playlist_id}")
+
+
+def extract_song_from_reply(message):
+    if message.reference:
+        replied_message = message.reference.resolved #resolved to fetch the replied to message
+        if replied_message:
+            texts = []
+            source_type = "text"
+
+            if replied_message.content:
+                text = replied_message.content.strip()
+                texts.append(text)
+
+                if text.startswith("https://open.spotify.com/track"):
+                    return text, "spotify_link"
+                elif text.startswith("https://open.spotify.com/album"):
+                    return text, "spotify_album"
+                elif text.startswith("https://open.spotify.com/playlist"):
+                    return text, "spotify_playlist"
+            
+            if replied_message.embeds:
+                for embed in replied_message.embeds:
+                    if embed.title:
+                        texts.append(embed.title.strip())
+                    if embed.description:
+                        texts.append(embed.description.strip())
+            
+            if replied_message.attachments:
+                for attachment in replied_message.attachments:
+                    if attachment.content_type and attachment.content_type.startswith("image"):
+                        image_url = attachment.url
+                        source_type = "image"
+                        return image_url, source_type
+                    
+            return "\n".join(texts) if texts else None, source_type
+    return None, "text"
+
+
+def extract_text_from_image_url(image_url):
+    response = client.chat.completions.create(
+        model="gpt-4.1-nano",
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Extract the text from this image."},
+                    {"type": "image_url", "image_url": {"url": image_url}}
+                ]
+            }
+        ]
+    )
+    return response.choices[0].message.content
+
+
+def extract_random_with_gpt(text):
+    response = client.chat.completions.create(
+        model="gpt-4.1-nano",
+        messages=[
+            {"role": "system", "content": "You match vague song descriptions to actual track names and artists. Return in the format 'SONG_NAME by ARTIST'."},
+            {"role": "user", "content": text}
+        ]
+    )
+    return response.choices[0].message.content
+
+
+def extract_song_arist_with_genius(text):
+    query = " ".join(text.split())
+    query = query if len(query) < 100 else query[:100]
+    results = genius.search_song(query)
+
+    if results and "hits" in results and results['hits']:
+        best_hit = results['hits'][0]['result']
+        return f"{best_hit['title']} by {best_hit['primary_artist']['name']}"
+    else:
+        return None
+
+
+
+
 
 @bot.event
 async def on_ready():
@@ -133,4 +186,22 @@ async def on_message(message):
         if text_content is not None:
             if source == "spotify_link":
                 response_msg = play_spotify_link(text_content)
-            if source 
+            elif source == "spotify_album":
+                response_msg = play_album_link(text_content)
+            elif source == "spotify_playlist":
+                response_msg = play_playlist_link(text_content)
+            elif source == "image":
+                extracted_text = extract_text_from_image_url(text_content)
+                song_info = extract_song_arist_with_genius(extracted_text)
+                response_msg = play_song(song_info)
+            else:
+                song_info = extract_random_with_gpt(text_content)
+                if " by " not in song_info:
+                    song_info = extract_song_arist_with_genius(text_content)
+                response_msg = play_song(song_info)
+
+            await message.channel.send(response_msg)
+        else:
+            await message.channel.send("Couldn't find the song.")
+
+bot.run(TOKEN)
