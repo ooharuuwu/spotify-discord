@@ -1,3 +1,4 @@
 .env
 old_files/
 tokens.db
+data/

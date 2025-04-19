@@ -1,23 +1,23 @@
 import discord
 import spotipy
-from spotipy.oauth2 import SpotifyOAuth
-import requests
-import json
 import lyricsgenius
 from dotenv import load_dotenv
+load_dotenv()
+
 import os
 from openai import OpenAI
+from token_store import get_token
 
-load_dotenv()
 
 TOKEN = os.getenv("TOKEN")
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
-SPOTIFY_REFRESH_TOKEN = os.getenv("SPOTIFY_REFRESH_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GENIUS_API_TOKEN = os.getenv("GENIUS_API_TOKEN")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
+
+token_scope = "user-read-playback-state user-modify-playback-state"
 
 intents = discord.Intents.default()
 intents.messages = True
@@ -27,19 +27,7 @@ bot = discord.Client(intents=intents)
 genius = lyricsgenius.Genius(GENIUS_API_TOKEN)
 
 
-def get_spotify_access_token():
-    url = "https://accounts.spotify.com/api/token"
-    data = {
-        "grant_type": "refresh_token",
-        "refresh_token": SPOTIFY_REFRESH_TOKEN,
-        "client_id": SPOTIFY_CLIENT_ID,
-        "client_secret": SPOTIFY_CLIENT_SECRET
-    }
-    response = requests.post(url, data=data)
-    return response.json().get("access_token")
-
-
-def play_song(song_query):
+def play_song(song_query, sp: spotipy.Spotify):
     if " by " in song_query:
         track_name, artist_name = song_query.split(" by ", 1)
     else:
@@ -53,12 +41,8 @@ def play_song(song_query):
     )
 
     max_query_length = 240
-
     if len(refined_query) > max_query_length:
         refined_query = refined_query[:max_query_length]
-
-    access_token = get_spotify_access_token()
-    sp = spotipy.Spotify(auth=access_token)
 
     results = sp.search(q=refined_query, type="track", limit=1)
     attempts = 0
@@ -81,15 +65,16 @@ def play_song(song_query):
     if not results["tracks"]["items"]:
         return "No valid song found after multiple attempts. Please try again"
     
-    track_uri = results["tracks"]["items"][0]["uri"]
+    track = results["tracks"]["items"][0]
+    uri = track["uri"]
     devices = sp.devices()["devices"]
+
     if not devices:
         return "No active Spotify device found, please open spotfiy somewhere"
     
     device_id = devices[0]["id"]
-    sp.start_playback(device_id=device_id, uris=[track_uri])
+    sp.start_playback(device_id=device_id, uris=[uri])
 
-    track = results["tracks"]["items"][0]
     return f"\U0001F3B5 Now playing: **{track['name']}** by **{track['artists'][0]['name']}**"
 
 
@@ -101,31 +86,26 @@ def extract_id_from_url(url, content_type):
     #incomplete
 
     
-def play_spotify_link(url):
+def play_spotify_link(url: str, sp: spotipy.Spotify):
     track_id = extract_id_from_url(url, "track")
     if not track_id:
         return "Invalid Spotify URL"
     
-    access_token = get_spotify_access_token()
-    sp = spotipy.Spotify(auth=access_token)
+    track = sp.track(track_id)
     devices = sp.devices()["devices"]
     if not devices:
         return "No active Spotify device found, please open spotfiy somewhere"
     
-    track = sp.track(track_id)
     sp.start_playback(device_id=devices[0]["id"], uris=[track['uri']])
     return f"\U0001F3B5 Now playing: **{track['name']}** by **{track['artists'][0]['name']}**"
 
 
-def play_album_link(url):
+def play_album_link(url: str, sp: spotipy.Spotify):
     album_id = extract_id_from_url(url, "album")
     if not album_id:
         return "Invalid Spotify Album URL"
     
-    access_token = get_spotify_access_token()
-    sp = spotipy.Spotify(auth=access_token)
     devices = sp.devices()["devices"]
-
     if not devices:
         return "No active Spotify device found, please open spotfiy somewhere"
     
@@ -133,13 +113,11 @@ def play_album_link(url):
     return "🎵 Now playing album!"
 
 
-def play_playlist_link(url):
+def play_playlist_link(url:str, sp: spotipy.Spotify):
     playlist_id = extract_id_from_url(url, "playlist")
     if not playlist_id:
         return "Invalid Spotify playlist url"
     
-    access_token = get_spotify_access_token()
-    sp = spotipy.Spotify(auth=access_token)
     devices = sp.devices()["devices"]
 
     if not devices:
@@ -234,27 +212,45 @@ async def on_message(message):
     if message.author == bot.user:
         return
     if "play this" in message.content.lower():
+
+        #fetching the token info
+        token_info = get_token(str(message.author.id))
+        if not token_info:
+            login_url = f"{os.getenv('OAUTH_SERVER_URL')}/login?user_id={message.author.id}"
+            embed = discord.Embed(
+                title="🎧 Connect your Spotify",
+                description=f"[Click here to log in]({login_url}) to link your account.",
+                color=0x1DB954
+            )
+            await message.author.send(embed=embed)
+            return
+        
+        #creating spotify client with their access token
+        sp = spotipy.Spotify(auth=token_info["access_token"])
+
+
+        #getting thigns from replied message
         text_content, source = await extract_song_from_reply(message)
 
         if text_content is not None:
             if source == "spotify_link":
-                response_msg = play_spotify_link(text_content)
+                response_msg = play_spotify_link(text_content, sp)
             elif source == "spotify_album":
-                response_msg = play_album_link(text_content)
+                response_msg = play_album_link(text_content, sp)
             elif source == "spotify_playlist":
-                response_msg = play_playlist_link(text_content)
+                response_msg = play_playlist_link(text_content, sp)
             elif source == "image":
                 extracted_text = extract_text_from_image_url(text_content)
                 print("Extracted lyrics:", extracted_text)
                 song_info = extract_song_artist_with_genius(extracted_text)
                 print("Extracted song info:", song_info)
-                response_msg = play_song(song_info)
+                response_msg = play_song(song_info, sp)
             else:
                 song_info = extract_random_with_gpt(text_content)
                 if " by " not in song_info:
                     song_info = extract_song_artist_with_genius(text_content)
                 print("Extracted song info:", song_info)
-                response_msg = play_song(song_info)
+                response_msg = play_song(song_info, sp)
 
             await message.channel.send(response_msg)
         else:

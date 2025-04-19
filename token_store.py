@@ -1,6 +1,9 @@
 import sqlite3
 import time 
 import os 
+from dotenv import load_dotenv
+
+load_dotenv()   
 
 DB_PATH = os.getenv("TOKEN_DB_PATH", "tokens.db") #try to understand this later
 
@@ -49,6 +52,7 @@ def get_token(discord_id):
     row = c.fetchone()
     conn.close()
 
+    print(f"🔍 get_token({discord_id}) returned → {row}")
     if not row: 
         return None
     
