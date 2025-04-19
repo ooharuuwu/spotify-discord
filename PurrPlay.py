@@ -6,7 +6,6 @@ import json
 import lyricsgenius
 from dotenv import load_dotenv
 import os
-import re
 from openai import OpenAI
 
 load_dotenv()
@@ -38,6 +37,60 @@ def get_spotify_access_token():
     }
     response = requests.post(url, data=data)
     return response.json().get("access_token")
+
+
+def play_song(song_query):
+    if " by " in song_query:
+        track_name, artist_name = song_query.split(" by ", 1)
+    else:
+        track_name = song_query
+        artist_name = ""
+    
+    refined_query = (
+        f"track:{track_name.strip()} artist:{artist_name.strip()}"
+        if artist_name
+        else track_name.strip()
+    )
+
+    max_query_length = 240
+
+    if len(refined_query) > max_query_length:
+        refined_query = refined_query[:max_query_length]
+
+    access_token = get_spotify_access_token()
+    sp = spotipy.Spotify(auth=access_token)
+
+    results = sp.search(q=refined_query, type="track", limit=1)
+    attempts = 0
+    max_attempts = 5
+
+    while not results["tracks"]["items"] and attempts < max_attempts:
+        fallback_result = extract_random_with_gpt(text=song_query)
+        if " by " in fallback_result:
+            track_name, artist_name = fallback_result.split(" by ", 1)
+            refined_query = f"track:{track_name.strip()} artist:{artist_name.strip()}"
+        else:
+            refined_query = fallback_result.strip()
+
+        if len(refined_query) > max_query_length:
+            refined_query = refined_query[:max_query_length]
+
+        results = sp.search(q=refined_query, type="track", limit=1)
+        attempts += 1
+
+    if not results["tracks"]["items"]:
+        return "No valid song found after multiple attempts. Please try again"
+    
+    track_uri = results["tracks"]["items"][0]["uri"]
+    devices = sp.devices()["devices"]
+    if not devices:
+        return "No active Spotify device found, please open spotfiy somewhere"
+    
+    device_id = devices[0]["id"]
+    sp.start_playback(device_id=device_id, uris=[track_uri])
+
+    track = results["tracks"]["items"][0]
+    return f"\U0001F3B5 Now playing: **{track['name']}** by **{track['artists'][0]['name']}**"
 
 
 def extract_id_from_url(url, content_type):
@@ -77,6 +130,7 @@ def play_album_link(url):
         return "No active Spotify device found, please open spotfiy somewhere"
     
     sp.start_playback(device_id=devices[0]["id"], context_uri=f"spotify:album:{album_id}")
+    return "🎵 Now playing album!"
 
 
 def play_playlist_link(url):
@@ -92,9 +146,10 @@ def play_playlist_link(url):
         return "No active Spotify device found, please open spotfiy somewhere"
     
     sp.start_playback(device_id=devices[0]["id"], context_uri=f"spotify:playlist:{playlist_id}")
+    return "🎵 Now playing playlist!"
 
 
-def extract_song_from_reply(message):
+async def extract_song_from_reply(message):
     if message.reference:
         replied_message = message.reference.resolved #resolved to fetch the replied to message
         if replied_message:
@@ -125,7 +180,8 @@ def extract_song_from_reply(message):
                         image_url = attachment.url
                         source_type = "image"
                         return image_url, source_type
-                    
+            
+            print(texts)
             return "\n".join(texts) if texts else None, source_type
     return None, "text"
 
@@ -157,19 +213,16 @@ def extract_random_with_gpt(text):
     return response.choices[0].message.content
 
 
-def extract_song_arist_with_genius(text):
+def extract_song_artist_with_genius(text):
     query = " ".join(text.split())
     query = query if len(query) < 100 else query[:100]
-    results = genius.search_song(query)
+    results = genius.search_songs(query)
 
     if results and "hits" in results and results['hits']:
         best_hit = results['hits'][0]['result']
         return f"{best_hit['title']} by {best_hit['primary_artist']['name']}"
     else:
         return None
-
-
-
 
 
 @bot.event
@@ -192,12 +245,15 @@ async def on_message(message):
                 response_msg = play_playlist_link(text_content)
             elif source == "image":
                 extracted_text = extract_text_from_image_url(text_content)
-                song_info = extract_song_arist_with_genius(extracted_text)
+                print("Extracted lyrics:", extracted_text)
+                song_info = extract_song_artist_with_genius(extracted_text)
+                print("Extracted song info:", song_info)
                 response_msg = play_song(song_info)
             else:
                 song_info = extract_random_with_gpt(text_content)
                 if " by " not in song_info:
-                    song_info = extract_song_arist_with_genius(text_content)
+                    song_info = extract_song_artist_with_genius(text_content)
+                print("Extracted song info:", song_info)
                 response_msg = play_song(song_info)
 
             await message.channel.send(response_msg)
