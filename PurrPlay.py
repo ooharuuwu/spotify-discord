@@ -19,11 +19,17 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 token_scope = "user-read-playback-state user-modify-playback-state"
 
+TRIGGER_EMOJI = "▶️"
+TARGET_BOT_ID = 356268235697553409
+
+
 intents = discord.Intents.default()
 intents.messages = True
 intents.message_content = True
+intents.reactions = True
+partials = ["MESSAGE", "CHANNEL", "REACTION"]
+bot = discord.Client(intents=intents, partials= partials)
 
-bot = discord.Client(intents=intents)
 genius = lyricsgenius.Genius(GENIUS_API_TOKEN)
 
 
@@ -163,6 +169,38 @@ async def extract_song_from_reply(message):
             return "\n".join(texts) if texts else None, source_type
     return None, "text"
 
+async def extract_song_from_message(message):
+    texts = []
+    source_type = "text"
+
+    if message.content:
+        text = message.content.strip()
+        texts.append(text)
+        if text.startswith("https://open.spotify.com/track"):
+            return text, "spotify_link"
+        if text.startswith("https://open.spotify.com/album"):
+            return text, "spotify_album"
+        if text.startswith("https://open.spotify.com/playlist"):
+            return text, "spotify_playlist"
+
+    if message.embeds:
+        for embed in message.embeds:
+            if embed.title:
+                texts.append(embed.title.strip())
+            if embed.description:
+                texts.append(embed.description.strip())
+        if texts:
+            return texts[0], source_type
+
+    if message.attachments:
+        for attachment in message.attachments:
+            if attachment.content_type and attachment.content_type.startswith("image"):
+                return attachment.url, "image"
+
+    if texts:
+        return "\n".join(texts), source_type
+
+    return None, source_type
 
 def extract_text_from_image_url(image_url):
     response = client.chat.completions.create(
@@ -211,6 +249,13 @@ async def on_ready():
 async def on_message(message):
     if message.author == bot.user:
         return
+    
+    if message.author.id == TARGET_BOT_ID:
+        await message.add_reaction(TRIGGER_EMOJI)
+
+    if message.content.startswith("https://open.spotify.com/track"):
+        await message.add_reaction(TRIGGER_EMOJI)
+    
     if "play this" in message.content.lower():
 
         #fetching the token info
@@ -255,5 +300,52 @@ async def on_message(message):
             await message.channel.send(response_msg)
         else:
             await message.channel.send("Couldn't find the song.")
+
+
+@bot.event
+async def on_reaction_add(reaction, user):
+    if user.bot:
+        return
+    if reaction.emoji != TRIGGER_EMOJI:
+        return
+    msg = reaction.message
+
+    token = get_token(str(user.id))
+
+    if not token:
+        login_url = f"{os.getenv('OAUTH_SERVER_URL')}/login?user_id={user.id}"
+        embed = discord.Embed(
+            title="🎧 Connect your Spotify",
+            description=f"[Click here to log in]({login_url}) to link your account.",
+            color=0x1DB954
+        )
+        return await user.send(embed=embed)
+    sp = spotipy.Spotify(auth=token["access_token"])
+    
+    txt, src = await extract_song_from_message(msg)
+    if not txt:
+        return await msg.channel.send("Couldn't find the song.")
+
+    # 4) dispatch exactly as in on_message
+    if src == "spotify_link":
+        resp = play_spotify_link(txt, sp)
+    elif src == "spotify_album":
+        resp = play_album_link(txt, sp)
+    elif src == "spotify_playlist":
+        resp = play_playlist_link(txt, sp)
+    elif src == "image":
+        # OCR→Genius→play
+        lyr = extract_text_from_image_url(txt)
+        info = extract_song_artist_with_genius(lyr)
+        resp = play_song(info, sp)
+    else:
+        # free‑text / embed title/description
+        info = extract_random_with_gpt(txt)
+        if " by " not in info:
+            info = extract_song_artist_with_genius(txt)
+        resp = play_song(info, sp)
+
+    await msg.channel.send(resp)
+
 
 bot.run(TOKEN)
